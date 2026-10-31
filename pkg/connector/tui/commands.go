@@ -321,6 +321,10 @@ func (s *session) carryOn(a *App) {
 
 // continueAs is carryOn with the config cf at price p.
 func (s *session) continueAs(a *App, cf statefile.Conf, p *catalog.Cost) {
+	if s.stepping() {
+		a.Say("Wait for this session to finish before continuing")
+		return
+	}
 	to := newSession(a, s.list, "")
 	to.cfg, to.price, to.started = &cf, p, true
 	to.input.Clear() // not the home draft, which stays kept until this screen leaves
