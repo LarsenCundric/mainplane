@@ -34,11 +34,12 @@ type session struct {
 	exports atomic.Int64    // copyLogs calls asked for; a waiting one leaves to a newer one
 
 	// under Harness.mu
-	running  bool               // a runner goroutine is stepping this session
-	kicked   bool               // a kick arrived while running: look again before stopping
-	cancel   context.CancelFunc // ends the running step
-	done     chan struct{}      // closed when the runner goroutine ends
-	deleting bool               // no kick starts or continues a runner
+	running   bool               // a runner goroutine is stepping this session
+	exporting int                // final log copies in flight; status stays stepping until all finish
+	kicked    bool               // a kick arrived while running: look again before stopping
+	cancel    context.CancelFunc // ends the running step
+	done      chan struct{}      // closed when the runner goroutine ends
+	deleting  bool               // no kick starts or continues a runner
 }
 
 func (h *Harness) session(id string) *session {
@@ -313,11 +314,19 @@ func (h *Harness) Kick(ctx context.Context, id string) {
 			s.mu.Unlock()
 			h.mu.Lock()
 			if !s.kicked || s.deleting {
+				copying := st == statefile.StatusClosed || st == statefile.StatusFailed
+				if copying {
+					s.exporting++
+				}
 				s.running, s.cancel, s.kicked = false, nil, false
 				h.mu.Unlock()
 				h.touch(id)
-				if st == statefile.StatusClosed || st == statefile.StatusFailed {
+				if copying {
 					h.copyLogs(ctx, s)
+					h.mu.Lock()
+					s.exporting--
+					h.mu.Unlock()
+					h.touch(id)
 				}
 				close(done)
 				return
@@ -485,13 +494,14 @@ func (h *Harness) lostJobs(ids []string) {
 	}
 }
 
-// status is the file's word, or stepping while a runner holds the session.
+// status is the file's word, or stepping while a runner or its final log
+// copies hold the session.
 func (h *Harness) status(id string, chain []statefile.Record) statefile.Status {
 	s := h.session(id)
 	h.mu.Lock()
-	running := s.running
+	busy := s.running || s.exporting > 0
 	h.mu.Unlock()
-	if running {
+	if busy {
 		return statefile.StatusStepping
 	}
 	return statefile.Derive(chain)
